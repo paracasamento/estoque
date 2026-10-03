@@ -1,46 +1,12 @@
 "use server";
 import { db } from "@/lib/db";
 import { revalidatePath } from "next/cache";
-
 const refresh=()=>revalidatePath("/");
 const value=(f:FormData,k:string)=>String(f.get(k)||"").trim();
-
-export async function addProduct(f:FormData){
- const sql=db(),name=value(f,"name"); if(!name)return;
- const variant=value(f,"variant")||null,category=value(f,"category")||"Outros",unit=value(f,"unit")||"un";
- const current=Math.max(0,Number(f.get("quantity")||0)),minimum=Math.max(0,Number(f.get("minimum")||0)),ideal=Math.max(0,Number(f.get("ideal")||0));
- const status=current===0?"out":current<minimum?"low":"ok";
- const existing=await sql`SELECT id FROM products WHERE name=${name} AND COALESCE(variant,'')=COALESCE(${variant},'') LIMIT 1`;
- if(existing[0]) await sql`UPDATE products SET category=${category},unit=${unit},minimum_quantity=${minimum},ideal_quantity=${ideal},updated_at=now() WHERE id=${existing[0].id}`;
- else await sql`INSERT INTO products(name,variant,category,unit,current_quantity,minimum_quantity,ideal_quantity,stock_status) VALUES(${name},${variant},${category},${unit},${current},${minimum},${ideal},${status})`;
- refresh();
-}
-export async function setCount(f:FormData){
- const sql=db(),id=Number(f.get("id")),qty=Math.max(0,Number(f.get("quantity")||0));
- const rows=await sql`SELECT current_quantity,minimum_quantity FROM products WHERE id=${id}`; if(!rows[0])return;
- const old=Number(rows[0].current_quantity),min=Number(rows[0].minimum_quantity),status=qty===0?"out":qty<min?"low":"ok";
- await sql`INSERT INTO stock_movements(product_id,kind,previous_quantity,new_quantity) VALUES(${id},'count',${old},${qty})`;
- await sql`UPDATE products SET current_quantity=${qty},stock_status=${status},updated_at=now() WHERE id=${id}`; refresh();
-}
-export async function markStock(f:FormData){
- const sql=db(),id=Number(f.get("id")),mark=value(f,"mark");
- const rows=await sql`SELECT current_quantity FROM products WHERE id=${id}`; if(!rows[0])return;
- const old=Number(rows[0].current_quantity);
- if(mark==="out"){await sql`INSERT INTO stock_movements(product_id,kind,previous_quantity,new_quantity) VALUES(${id},'adjustment',${old},0)`;await sql`UPDATE products SET current_quantity=0,stock_status='out',updated_at=now() WHERE id=${id}`;}
- else await sql`UPDATE products SET stock_status='low',updated_at=now() WHERE id=${id}`; refresh();
-}
-export async function addEntry(f:FormData){
- const sql=db(),id=Number(f.get("id")),qty=Math.max(1,Number(f.get("quantity")||1)),exp=value(f,"expires")||null;
- const rows=await sql`SELECT current_quantity,minimum_quantity FROM products WHERE id=${id}`; if(!rows[0])return;
- const old=Number(rows[0].current_quantity),next=old+qty,min=Number(rows[0].minimum_quantity),status=next<min?"low":"ok";
- await sql`INSERT INTO stock_movements(product_id,kind,previous_quantity,new_quantity,expires_at) VALUES(${id},'entry',${old},${next},${exp})`;
- await sql`INSERT INTO stock_lots(product_id,quantity_received,quantity_remaining,expires_at) VALUES(${id},${qty},${qty},${exp})`;
- await sql`UPDATE products SET current_quantity=${next},stock_status=${status},updated_at=now() WHERE id=${id}`; refresh();
-}
-export async function generateShoppingList(){
- const sql=db(); const items=await sql`SELECT id,name,variant,GREATEST(ideal_quantity-current_quantity,1) qty FROM products WHERE active AND (stock_status IN ('low','out') OR current_quantity<minimum_quantity) ORDER BY stock_status DESC,name`; if(!items.length)return;
- await sql`UPDATE shopping_lists SET status='completed',completed_at=now() WHERE status='open'`;
- const list=await sql`INSERT INTO shopping_lists DEFAULT VALUES RETURNING id`;
- for(const p of items) await sql`INSERT INTO shopping_list_items(shopping_list_id,product_id,item_name,quantity) VALUES(${list[0].id},${p.id},${p.variant?p.name+" · "+p.variant:p.name},${p.qty})`; refresh();
-}
+export async function addProduct(f:FormData){const sql=db(),name=value(f,"name");if(!name)return;const variant=value(f,"variant")||null,category=value(f,"category")||"Outros",unit=value(f,"unit")||"un",mode=value(f,"count_mode")||"simple",packageType=mode==="package"?(value(f,"package_type")||"fardo"):null,upp=mode==="package"?Math.max(1,Number(f.get("units_per_package")||1)):null;const current=Math.max(0,Number(f.get("quantity")||0)),minimum=Math.max(0,Number(f.get("minimum")||0)),ideal=Math.max(0,Number(f.get("ideal")||0)),status=current===0?"out":current<minimum?"low":"ok";const existing=await sql`SELECT id FROM products WHERE name=${name} AND COALESCE(variant,'')=COALESCE(${variant},'') LIMIT 1`;if(existing[0])await sql`UPDATE products SET category=${category},unit=${unit},minimum_quantity=${minimum},ideal_quantity=${ideal},count_mode=${mode},package_type=${packageType},units_per_package=${upp},updated_at=now() WHERE id=${existing[0].id}`;else await sql`INSERT INTO products(name,variant,category,unit,current_quantity,minimum_quantity,ideal_quantity,stock_status,count_mode,package_type,units_per_package) VALUES(${name},${variant},${category},${unit},${current},${minimum},${ideal},${status},${mode},${packageType},${upp})`;refresh();}
+export async function configurePackage(f:FormData){const sql=db(),id=Number(f.get("id")),type=value(f,"package_type"),upp=Math.max(1,Number(f.get("units_per_package")||1));await sql`UPDATE products SET count_mode='package',package_type=${type},units_per_package=${upp},updated_at=now() WHERE id=${id}`;refresh();}
+export async function setCount(f:FormData){const sql=db(),id=Number(f.get("id"));const rows=await sql`SELECT current_quantity,minimum_quantity,count_mode,units_per_package FROM products WHERE id=${id}`;if(!rows[0])return;const p=rows[0],qty=p.count_mode==="package"&&p.units_per_package?Math.max(0,Number(f.get("packages")||0))*Number(p.units_per_package)+Math.max(0,Number(f.get("loose")||0)):Math.max(0,Number(f.get("quantity")||0));const old=Number(p.current_quantity),min=Number(p.minimum_quantity),status=qty===0?"out":qty<min?"low":"ok";await sql`INSERT INTO stock_movements(product_id,kind,previous_quantity,new_quantity) VALUES(${id},'count',${old},${qty})`;await sql`UPDATE products SET current_quantity=${qty},stock_status=${status},updated_at=now() WHERE id=${id}`;refresh();}
+export async function markStock(f:FormData){const sql=db(),id=Number(f.get("id")),mark=value(f,"mark");const rows=await sql`SELECT current_quantity FROM products WHERE id=${id}`;if(!rows[0])return;const old=Number(rows[0].current_quantity);if(mark==="out"){await sql`INSERT INTO stock_movements(product_id,kind,previous_quantity,new_quantity) VALUES(${id},'adjustment',${old},0)`;await sql`UPDATE products SET current_quantity=0,stock_status='out',updated_at=now() WHERE id=${id}`;}else await sql`UPDATE products SET stock_status='low',updated_at=now() WHERE id=${id}`;refresh();}
+export async function addEntry(f:FormData){const sql=db(),id=Number(f.get("id"));const rows=await sql`SELECT current_quantity,minimum_quantity,count_mode,units_per_package FROM products WHERE id=${id}`;if(!rows[0])return;const p=rows[0],qty=p.count_mode==="package"&&p.units_per_package?Math.max(0,Number(f.get("packages")||0))*Number(p.units_per_package)+Math.max(0,Number(f.get("loose")||0)):Math.max(1,Number(f.get("quantity")||1)),exp=value(f,"expires")||null,old=Number(p.current_quantity),next=old+qty,min=Number(p.minimum_quantity),status=next<min?"low":"ok";if(qty<1)return;await sql`INSERT INTO stock_movements(product_id,kind,previous_quantity,new_quantity,expires_at) VALUES(${id},'entry',${old},${next},${exp})`;await sql`INSERT INTO stock_lots(product_id,quantity_received,quantity_remaining,expires_at) VALUES(${id},${qty},${qty},${exp})`;await sql`UPDATE products SET current_quantity=${next},stock_status=${status},updated_at=now() WHERE id=${id}`;refresh();}
+export async function generateShoppingList(){const sql=db(),items=await sql`SELECT id,name,variant,GREATEST(ideal_quantity-current_quantity,1) qty FROM products WHERE active AND (stock_status IN ('low','out') OR current_quantity<minimum_quantity) ORDER BY stock_status DESC,name`;if(!items.length)return;await sql`UPDATE shopping_lists SET status='completed',completed_at=now() WHERE status='open'`;const list=await sql`INSERT INTO shopping_lists DEFAULT VALUES RETURNING id`;for(const p of items)await sql`INSERT INTO shopping_list_items(shopping_list_id,product_id,item_name,quantity) VALUES(${list[0].id},${p.id},${p.variant?p.name+" · "+p.variant:p.name},${p.qty})`;refresh();}
 export async function toggleShoppingItem(f:FormData){const sql=db();await sql`UPDATE shopping_list_items SET checked=NOT checked WHERE id=${Number(f.get("id"))}`;refresh();}
