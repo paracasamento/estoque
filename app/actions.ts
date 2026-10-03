@@ -10,9 +10,9 @@ export async function addProduct(f:FormData){
  const variant=value(f,"variant")||null,category=value(f,"category")||"Outros",unit=value(f,"unit")||"un";
  const current=Math.max(0,Number(f.get("quantity")||0)),minimum=Math.max(0,Number(f.get("minimum")||0)),ideal=Math.max(0,Number(f.get("ideal")||0));
  const status=current===0?"out":current<minimum?"low":"ok";
- await sql`INSERT INTO products(name,variant,category,unit,current_quantity,minimum_quantity,ideal_quantity,stock_status)
- VALUES(${name},${variant},${category},${unit},${current},${minimum},${ideal},${status})
- ON CONFLICT(name) DO UPDATE SET variant=EXCLUDED.variant,category=EXCLUDED.category,unit=EXCLUDED.unit,minimum_quantity=EXCLUDED.minimum_quantity,ideal_quantity=EXCLUDED.ideal_quantity,updated_at=now()`;
+ const existing=await sql`SELECT id FROM products WHERE name=${name} AND COALESCE(variant,'')=COALESCE(${variant},'') LIMIT 1`;
+ if(existing[0]) await sql`UPDATE products SET category=${category},unit=${unit},minimum_quantity=${minimum},ideal_quantity=${ideal},updated_at=now() WHERE id=${existing[0].id}`;
+ else await sql`INSERT INTO products(name,variant,category,unit,current_quantity,minimum_quantity,ideal_quantity,stock_status) VALUES(${name},${variant},${category},${unit},${current},${minimum},${ideal},${status})`;
  refresh();
 }
 export async function setCount(f:FormData){
